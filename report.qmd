@@ -8,27 +8,248 @@ format: typst
 ## **Part 0: libraries**
 
 ```{r}
-
+library(tidyverse) 
+library(readr) 
+library(janitor) 
+library(ggplot2) 
+library(sf) 
+library(dplyr) 
 ```
 
 ## **Part 1:** **Defining Research Question**
 
-Chosen Question:
+##Chosen Question:How has the share of renewable energy changed from 2021 to 2023 across U.S. states,and how does this relate to EV registrations by state in 2023?
+##Electric vehicles reduce direct emissions, but their environmental benefit depends on whether the electricity used to charge them comes from renewable sources. By comparing renewable energy use and EV registrations, we can see whether EV adoption is occurring in states with cleaner electricity mixes.Which states increased renewable energy usage the most between 2021–2023 Whether states with more EV registrations tend to have cleaner power sources Regional patterns in renewable growth and EV adoption ##
+
 
 ## **Part 2: Data Preparation and Cleaning**
 
 ```{r}
+renew_21 <- read_csv("renew_use_2021.csv")
+renew_22 <- read_csv("renew_use_2022.csv")
+renew_23 <- read_csv("renew_use_2023.csv")
+ev_23 <- read_csv("ev_registrations_by_state_2023.csv")
+energy_price <- read_csv("av_energy_price_2021-2023.csv")
 
+
+
+renew_21 <- clean_names(renew_21)
+renew_22 <- clean_names(renew_22)
+renew_23 <- clean_names(renew_23)
+ev_23 <- clean_names(ev_23)
+energy_price <- clean_names(energy_price)
+
+renew_21$state <- str_to_title(renew_21$state)
+renew_22$state <- str_to_title(renew_22$state)
+renew_23$state <- str_to_title(renew_23$state)
+ev_23$state <- str_to_title(ev_23$state)
+energy_price$state <- str_to_title(energy_price$state)
+
+renew_21$year <- 2021
+renew_22$year <- 2022
+renew_23$year <- 2023
+
+renew_all <- bind_rows(renew_21, renew_22, renew_23)
+
+glimpse(renew_all)
+summary(ev_23)
 ```
 
 ## **Part 3: Joining / Pivoting Datasets for Analysis**
 
 ```{r}
+--- Summarize renewable share by state and year ---
 
+
+
+renew_summary <- renew_all %>%
+group_by(state, year) %>%
+summarise(renewable_share = mean(renewable_energy_share, na.rm = TRUE))
+
+--- Calculate change in renewable share from 2021 to 2023 ---
+
+
+
+renew_change <- renew_summary %>%
+pivot_wider(names_from = year, values_from = renewable_share) %>%
+mutate(change_21_23 = 2023 - 2021)
+
+--- Join with EV registrations for 2023 ---
+
+
+
+ev_clean <- ev_23 %>%
+select(state, total_ev_registrations = total_ev)
+
+
+
+
+combined_data <- renew_change %>%
+left_join(ev_clean, by = "state")
+
+--- Quick look at the merged dataset ---
+
+
+
+glimpse(combined_data)
+
+--- Correlation check (numeric relationship) ---
+
+
+
+cor_test <- cor.test(combined_data$change_21_23, combined_data$total_ev_registrations, use = "complete.obs")
+cor_test
 ```
 
 ## **Part 4: Mapping Visualization**
 
 ```{r}
+# --- Load US states map ---
+
+us_states <- map_data("state")
+
+# --- Prepare data for merging (lowercase state names) ---
+
+combined_data_map <- combined_data %>%
+mutate(region = tolower(state))
+
+# --- Join with map data ---
+
+map_ready <- left_join(us_states, combined_data_map, by = "region")
+
+# --- Map 1: Renewable Energy Change 2021–2023 ---
+
+ggplot(map_ready, aes(x = long, y = lat, group = group, fill = change_21_23)) +
+geom_polygon(color = "white") +
+scale_fill_viridis_c(option = "C", name = "Change (2021–2023)") +
+labs(title = "Change in Renewable Energy Share (2021–2023)",
+subtitle = "Increase in renewable energy share by U.S. state",
+caption = "Source: EIA dataset (2021–2023)") +
+theme_minimal()
+
+# --- Map 2: EV Registrations 2023 ---
+
+ggplot(map_ready, aes(x = long, y = lat, group = group, fill = total_ev_registrations)) +
+geom_polygon(color = "white") +
+scale_fill_viridis_c(option = "D", name = "EV Registrations") +
+labs(title = "Electric Vehicle Registrations (2023)",
+subtitle = "Number of EVs registered by state",
+caption = "Source: EV Registration Data 2023") +
+theme_minimal()
 
 ```
+
+## **Part 5: Analysis & Interpretation**
+# Extra libraries for analysis/plots (safe to re-run)
+
+library(ggrepel)  # pretty labels
+library(broom)    # model summaries
+library(scales)   # axis formatting
+
+# --- Safety check: combined_data must exist ---
+
+stopifnot(exists("combined_data"))
+
+# --- Quick summary stats ---
+
+summary_stats <- combined_data %>%
+summarise(
+n_states = sum(!is.na(change_21_23) & !is.na(total_ev_registrations)),
+mean_change = mean(change_21_23, na.rm = TRUE),
+median_change = median(change_21_23, na.rm = TRUE),
+sd_change = sd(change_21_23, na.rm = TRUE),
+mean_ev = mean(total_ev_registrations, na.rm = TRUE),
+median_ev = median(total_ev_registrations, na.rm = TRUE),
+sd_ev = sd(total_ev_registrations, na.rm = TRUE)
+)
+summary_stats
+
+# --- Top/Bottom states by renewable change (2021->2023) ---
+
+top5_change <- combined_data %>%
+arrange(desc(change_21_23)) %>%
+slice_head(n = 5) %>%
+select(state, change_21_23)
+
+bottom5_change <- combined_data %>%
+arrange(change_21_23) %>%
+slice_head(n = 5) %>%
+select(state, change_21_23)
+
+top5_change
+bottom5_change
+
+# --- Handle skew in EV counts (log1p) ---
+
+combined_data <- combined_data %>%
+mutate(ev_log = log1p(total_ev_registrations))
+
+# --- Correlation (already computed earlier as cor_test); show again with log transform ---
+
+cor_log <- cor.test(combined_data$change_21_23, combined_data$ev_log, use = "complete.obs")
+cor_log
+
+# --- Simple linear models both ways (association only, not causal) ---
+
+# Model A: EV (log) as a function of renewable change
+
+mod_ev_on_change <- lm(ev_log ~ change_21_23, data = combined_data)
+tidy(mod_ev_on_change)
+glance(mod_ev_on_change)
+
+# Model B: Renewable change as a function of EV (log)
+
+mod_change_on_ev <- lm(change_21_23 ~ ev_log, data = combined_data)
+tidy(mod_change_on_ev)
+glance(mod_change_on_ev)
+
+# --- Scatter with regression line (log EV) ---
+
+p1 <- ggplot(combined_data, aes(x = change_21_23, y = ev_log, label = state)) +
+geom_point(size = 2, alpha = 0.8) +
+geom_smooth(method = "lm", se = TRUE, linewidth = 0.8) +
+geom_text_repel(min.segment.length = 0) +
+labs(
+title = "EV Registrations (log scale) vs. Change in Renewable Energy Share (2021–2023)",
+x = "Change in Renewable Share (pct points, 2021 → 2023)",
+y = "log(1 + EV registrations in 2023)"
+) +
+theme_minimal()
+p1
+
+# --- Optional alt scatter (levels), can be skewed; keep for reference ---
+
+p2 <- ggplot(combined_data, aes(x = change_21_23, y = total_ev_registrations, label = state)) +
+geom_point(size = 2, alpha = 0.8) +
+geom_smooth(method = "lm", se = TRUE, linewidth = 0.8) +
+geom_text_repel(min.segment.length = 0) +
+scale_y_continuous(labels = label_number(big.mark=",")) +
+labs(
+title = "EV Registrations (levels) vs. Change in Renewable Energy Share (2021–2023)",
+x = "Change in Renewable Share (pct points, 2021 → 2023)",
+y = "EV registrations in 2023"
+) +
+theme_minimal()
+p2
+
+# --- Short printed narrative (auto-filled with your results) ---
+
+cat("\n### Key Findings (Auto)\n")
+cat("- N states used:", summary_stats$n_states, "\n")
+cat("- Mean renewable change (2021→2023):", round(summary_stats$mean_change, 2), "pp\n")
+cat("- Median renewable change (2021→2023):", round(summary_stats$median_change, 2), "pp\n")
+cat("- Correlation(change, log(1+EV)): r =", round(cor_log$estimate, 3),
+" (p =", signif(cor_log$p.value, 3), ")\n\n")
+
+cat("Top 5 states by renewable increase (pp):\n")
+print(top5_change)
+
+cat("\nBottom 5 states by renewable increase (pp):\n")
+print(bottom5_change)
+
+cat("\nInterpretation:\n")
+cat("- States with larger renewable-share increases between 2021–2023 tend to have",
+"higher EV registrations (on a log scale) if the correlation and slope are positive.\n")
+cat("- Results are descriptive, not causal: EV adoption and renewables may both be driven",
+"by policy, income, or grid constraints. Treat models as associations.\n")
+
